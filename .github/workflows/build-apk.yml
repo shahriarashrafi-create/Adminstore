@@ -1,0 +1,132 @@
+name: Build AdminStore APK
+
+on:
+  workflow_dispatch:
+
+  push:
+    paths:
+      - "*.zip"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build AdminStore Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find ZIP file
+        id: zip
+        shell: bash
+        run: |
+          ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" -printf "%T@ %p\n" \
+            | sort -nr \
+            | head -n 1 \
+            | cut -d' ' -f2-)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "No ZIP file found in repository root."
+            exit 1
+          fi
+
+          echo "Using ZIP: $ZIP_FILE"
+          echo "file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Extract AdminStore project
+        shell: bash
+        run: |
+          rm -rf extracted
+          mkdir -p extracted
+
+          unzip -q "${{ steps.zip.outputs.file }}" -d extracted
+
+          echo "ZIP extracted successfully."
+          echo "Extracted files:"
+          find extracted -maxdepth 3 -type f | head -100
+
+      - name: Find Android project
+        id: project
+        shell: bash
+        run: |
+          SETTINGS=$(find extracted -type f \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            | head -n 1)
+
+          if [ -z "$SETTINGS" ]; then
+            echo "Android/Gradle project not found inside ZIP."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS")
+
+          echo "Android project found:"
+          echo "$PROJECT_DIR"
+
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make Gradle wrapper executable
+        shell: bash
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: |
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+          fi
+
+      - name: Build AdminStore Debug APK
+        shell: bash
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: |
+          if [ -f "./gradlew" ]; then
+            ./gradlew assembleDebug --stacktrace
+          else
+            gradle assembleDebug --stacktrace
+          fi
+
+      - name: Find AdminStore APK
+        id: apk
+        if: success()
+        shell: bash
+        run: |
+          APK=$(find "${{ steps.project.outputs.dir }}" \
+            -type f \
+            -name "*.apk" \
+            -path "*/build/outputs/apk/*" \
+            ! -name "*androidTest*" \
+            | sort \
+            | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "Build completed but AdminStore APK was not found."
+            echo "Available APK files:"
+            find "${{ steps.project.outputs.dir }}" -type f -name "*.apk" || true
+            exit 1
+          fi
+
+          echo "APK found: $APK"
+
+          mkdir -p apk-output
+          cp "$APK" apk-output/AdminStore-debug.apk
+
+          echo "path=apk-output/AdminStore-debug.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload AdminStore APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AdminStore-APK
+          path: apk-output/AdminStore-debug.apk
+          if-no-files-found: error
+          retention-days: 30
